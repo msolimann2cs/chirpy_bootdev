@@ -22,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	tokenSecret    string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -73,13 +74,26 @@ func customHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
+
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, `{"error": "missing or invalid token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.tokenSecret)
+	if err != nil {
+		http.Error(w, `{"error": "invalid or expired token"}`, http.StatusUnauthorized)
+		return
+	}
+
 	type parameters struct {
-		Body    string    `json:"body"`
-		User_id uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
+		//User_id uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		// an error will be thrown if the JSON is invalid or has the wrong types
 		// any missing fields will simply have their values in the struct set to their zero value
@@ -115,7 +129,7 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 
 	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 		Body:   result,
-		UserID: params.User_id,
+		UserID: userID,
 	})
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -269,8 +283,9 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type credentials struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Password         string `json:"password"`
+		Email            string `json:"email"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
 	}
 
 	var creds credentials
@@ -290,12 +305,20 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	duration := time.Hour
+	if creds.ExpiresInSeconds > 0 && creds.ExpiresInSeconds <= 3600 {
+		duration = time.Duration(creds.ExpiresInSeconds) * time.Second
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.tokenSecret, duration)
+
 	type returnVals struct {
 		// the key will be the name of struct field unless you give it an explicit JSON tag
 		Id         uuid.UUID `json:"id"`
 		Created_at time.Time `json:"created_at"`
 		Updated_at time.Time `json:"updated_at"`
 		Email      string    `json:"email"`
+		Token      string    `json:"token"`
 	}
 
 	resp := returnVals{
@@ -303,7 +326,9 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Created_at: user.CreatedAt,
 		Updated_at: user.UpdatedAt,
 		Email:      user.Email,
+		Token:      token,
 	}
+
 	dat, err := json.Marshal(resp)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -327,6 +352,7 @@ func main() {
 	}
 
 	platform := os.Getenv("PLATFORM")
+	tokenSecret := os.Getenv("JWT_SECRET")
 
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
@@ -345,8 +371,9 @@ func main() {
 
 	//--------------------
 	apiCfg := &apiConfig{
-		db:       dbQueries,
-		platform: platform,
+		db:          dbQueries,
+		platform:    platform,
+		tokenSecret: tokenSecret,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
