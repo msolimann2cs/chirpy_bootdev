@@ -23,6 +23,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	tokenSecret    string
+	polkaKey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -489,6 +490,13 @@ func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) polkaWebhookHandler(w http.ResponseWriter, r *http.Request) {
+
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil || apiKey != cfg.polkaKey {
+		http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	type webhookEvent struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -497,7 +505,7 @@ func (cfg *apiConfig) polkaWebhookHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	var event webhookEvent
-	err := json.NewDecoder(r.Body).Decode(&event)
+	err = json.NewDecoder(r.Body).Decode(&event)
 	if err != nil {
 		http.Error(w, `{"error": "invalid webhook"}`, http.StatusBadRequest)
 		return
@@ -526,6 +534,7 @@ func main() {
 
 	platform := os.Getenv("PLATFORM")
 	tokenSecret := os.Getenv("JWT_SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
 
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
@@ -547,6 +556,7 @@ func main() {
 		db:          dbQueries,
 		platform:    platform,
 		tokenSecret: tokenSecret,
+		polkaKey:    polkaKey,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
