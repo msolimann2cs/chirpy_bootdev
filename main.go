@@ -71,9 +71,10 @@ func customHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body    string    `json:"body"`
+		User_id uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -111,12 +112,34 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		result = strings.ReplaceAll(result, old, new)
 	}
 
+	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:   result,
+		UserID: params.User_id,
+	})
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(500)
+		w.Write([]byte(fmt.Sprintf(`{
+			"error": "Something went wrong"
+		}`)))
+		return
+	}
+
 	type returnVals struct {
 		// the key will be the name of struct field unless you give it an explicit JSON tag
-		Cleaned_body string `json:"cleaned_body"`
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Body       string    `json:"body"`
+		User_id    uuid.UUID `json:"user_id"`
 	}
+
 	respBody := returnVals{
-		Cleaned_body: result,
+		Id:         chirp.ID,
+		Created_at: chirp.CreatedAt,
+		Updated_at: chirp.UpdatedAt,
+		Body:       chirp.Body,
+		User_id:    chirp.UserID,
 	}
 	dat, err := json.Marshal(respBody)
 	if err != nil {
@@ -128,7 +151,7 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(201)
 	w.Write(dat)
 
 }
@@ -221,8 +244,9 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.createUser)
+	mux.HandleFunc("POST /api/chirps", apiCfg.postChirp)
 	mux.HandleFunc("GET /api/healthz", customHandler)
-	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
+	//mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	//mux.Handle("/app/", http.StripPrefix("/app", http.FileServer(http.Dir("."))))
