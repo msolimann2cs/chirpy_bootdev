@@ -283,9 +283,8 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type credentials struct {
-		Password         string `json:"password"`
-		Email            string `json:"email"`
-		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 
 	var creds credentials
@@ -304,29 +303,32 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "Incorrect email or password"}`, http.StatusUnauthorized)
 		return
 	}
+	token, _ := auth.MakeJWT(user.ID, cfg.tokenSecret, time.Hour)
 
-	duration := time.Hour
-	if creds.ExpiresInSeconds > 0 && creds.ExpiresInSeconds <= 3600 {
-		duration = time.Duration(creds.ExpiresInSeconds) * time.Second
-	}
-
-	token, err := auth.MakeJWT(user.ID, cfg.tokenSecret, duration)
+	refreshToken, _ := auth.MakeRefreshToken()
+	cfg.db.InsertRefreshToken(r.Context(), database.InsertRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour),
+	})
 
 	type returnVals struct {
 		// the key will be the name of struct field unless you give it an explicit JSON tag
-		Id         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Email      string    `json:"email"`
-		Token      string    `json:"token"`
+		Id            uuid.UUID `json:"id"`
+		Created_at    time.Time `json:"created_at"`
+		Updated_at    time.Time `json:"updated_at"`
+		Email         string    `json:"email"`
+		Token         string    `json:"token"`
+		Refresh_token string    `json:"refresh_token"`
 	}
 
 	resp := returnVals{
-		Id:         user.ID,
-		Created_at: user.CreatedAt,
-		Updated_at: user.UpdatedAt,
-		Email:      user.Email,
-		Token:      token,
+		Id:            user.ID,
+		Created_at:    user.CreatedAt,
+		Updated_at:    user.UpdatedAt,
+		Email:         user.Email,
+		Token:         token,
+		Refresh_token: refreshToken,
 	}
 
 	dat, err := json.Marshal(resp)
@@ -342,6 +344,44 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	//json.NewEncoder(w).Encode(resp)
 	w.WriteHeader(200)
 	w.Write(dat)
+}
+
+func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, `{"error": "invalid or missing token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	user, err := cfg.db.GetUserFromRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	newToken, err := auth.MakeJWT(user.ID, cfg.tokenSecret, time.Hour)
+	if err != nil {
+		http.Error(w, `{"error": "failed to generate token"}`, http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"token": newToken})
+}
+
+func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, `{"error": "invalid or missing token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	err = cfg.db.RevokeRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		http.Error(w, `{"error": "unable to revoke token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -384,6 +424,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpByID)
 	mux.HandleFunc("GET /api/healthz", customHandler)
+	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
+	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
 
 	//mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
