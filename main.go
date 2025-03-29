@@ -173,13 +173,27 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.db.GetChirps(r.Context())
+	authorIDStr := r.URL.Query().Get("author_id")
+	var chirps []database.Chirp
+	var err error
+
+	if authorIDStr != "" {
+		authorID, err := uuid.Parse(authorIDStr)
+		if err != nil {
+			http.Error(w, `{"error": "invalid author_id"}`, http.StatusBadRequest)
+			return
+		}
+		chirps, err = cfg.db.GetChirpsByAuthor(r.Context(), authorID)
+		if err != nil {
+			http.Error(w, `{"error": "could not retrieve chirps"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		chirps, err = cfg.db.GetChirps(r.Context())
+	}
+
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(500)
-		w.Write([]byte(fmt.Sprintf(`{
-			"error": "Something went wrong"
-		}`)))
+		http.Error(w, `{"error": "could not retrieve chirps"}`, http.StatusInternalServerError)
 		return
 	}
 
