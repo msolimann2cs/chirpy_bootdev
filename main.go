@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy_bootdev/internal/auth"
 	"chirpy_bootdev/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -156,9 +157,54 @@ func (cfg *apiConfig) postChirp(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(500)
+		w.Write([]byte(fmt.Sprintf(`{
+			"error": "Something went wrong"
+		}`)))
+		return
+	}
+
+	dat, err := json.Marshal(chirps)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(500)
+		w.Write([]byte(fmt.Sprintf(`{
+			"error": "Something went wrong"
+		}`)))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
+	chirpIDStr := r.PathValue("chirpID") // Get path param
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		http.Error(w, `{"error": "Invalid chirp ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		http.Error(w, `{"error": "Chirp not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(chirp)
+}
+
 func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -182,7 +228,17 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		Updated_at time.Time `json:"updated_at"`
 		Email      string    `json:"email"`
 	}
-	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+
+	passwordHash, err := auth.HashPassword(params.Password)
+	if err != nil {
+		http.Error(w, `{"error": "failed to hash password"}`, http.StatusInternalServerError)
+		return
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		HashedPassword: passwordHash,
+		Email:          params.Email,
+	})
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(500)
@@ -208,6 +264,58 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	type credentials struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	var creds credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, `{"error": "Invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	user, err := cfg.db.GetUserByEmail(r.Context(), creds.Email)
+	if err != nil {
+		http.Error(w, `{"error": "Incorrect email or password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if err := auth.CheckPasswordHash(user.HashedPassword, creds.Password); err != nil {
+		http.Error(w, `{"error": "Incorrect email or password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	type returnVals struct {
+		// the key will be the name of struct field unless you give it an explicit JSON tag
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}
+
+	resp := returnVals{
+		Id:         user.ID,
+		Created_at: user.CreatedAt,
+		Updated_at: user.UpdatedAt,
+		Email:      user.Email,
+	}
+	dat, err := json.Marshal(resp)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(500)
+		w.Write([]byte(fmt.Sprintf(`{
+			"error": "Something went wrong"
+		}`)))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	//json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(200)
 	w.Write(dat)
 }
 
@@ -244,8 +352,12 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.createUser)
+	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/chirps", apiCfg.postChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpByID)
 	mux.HandleFunc("GET /api/healthz", customHandler)
+
 	//mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
