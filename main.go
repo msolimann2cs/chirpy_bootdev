@@ -215,6 +215,46 @@ func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(chirp)
 }
 
+func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, `{"error": "missing or invalid token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.tokenSecret)
+	if err != nil {
+		http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		http.Error(w, `{"error": "invalid chirp ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		http.Error(w, `{"error": "chirp not found"}`, http.StatusNotFound)
+		return
+	}
+
+	if chirp.UserID != userID {
+		http.Error(w, `{"error": "forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	err = cfg.db.DeleteChirp(r.Context(), chirpID)
+	if err != nil {
+		http.Error(w, `{"error": "could not delete chirp"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent) // 204
+}
+
 func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Password string `json:"password"`
@@ -482,6 +522,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.postChirp)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpByID)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
 	mux.HandleFunc("GET /api/healthz", customHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
