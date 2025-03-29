@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -196,7 +197,16 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "could not retrieve chirps"}`, http.StatusInternalServerError)
 		return
 	}
-
+	sortParam := r.URL.Query().Get("sort")
+	if sortParam == "desc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
+	} else {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+		})
+	}
 	dat, err := json.Marshal(chirps)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
