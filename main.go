@@ -277,10 +277,11 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 
 	type returnVals struct {
 		// the key will be the name of struct field unless you give it an explicit JSON tag
-		Id         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Email      string    `json:"email"`
+		Id          uuid.UUID `json:"id"`
+		Created_at  time.Time `json:"created_at"`
+		Updated_at  time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	passwordHash, err := auth.HashPassword(params.Password)
@@ -302,10 +303,11 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respBody := returnVals{
-		Id:         user.ID,
-		Created_at: user.CreatedAt,
-		Updated_at: user.UpdatedAt,
-		Email:      user.Email,
+		Id:          user.ID,
+		Created_at:  user.CreatedAt,
+		Updated_at:  user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	dat, err := json.Marshal(respBody)
 	if err != nil {
@@ -362,17 +364,19 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type userResponse struct {
-		ID        uuid.UUID `json:"id"`
-		Email     string    `json:"email"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
+		ID          uuid.UUID `json:"id"`
+		Email       string    `json:"email"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	resp := userResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
+		ID:          user.ID,
+		Email:       user.Email,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -416,6 +420,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Created_at    time.Time `json:"created_at"`
 		Updated_at    time.Time `json:"updated_at"`
 		Email         string    `json:"email"`
+		IsChirpyRed   bool      `json:"is_chirpy_red"`
 		Token         string    `json:"token"`
 		Refresh_token string    `json:"refresh_token"`
 	}
@@ -425,6 +430,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Created_at:    user.CreatedAt,
 		Updated_at:    user.UpdatedAt,
 		Email:         user.Email,
+		IsChirpyRed:   user.IsChirpyRed,
 		Token:         token,
 		Refresh_token: refreshToken,
 	}
@@ -482,6 +488,35 @@ func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) polkaWebhookHandler(w http.ResponseWriter, r *http.Request) {
+	type webhookEvent struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+
+	var event webhookEvent
+	err := json.NewDecoder(r.Body).Decode(&event)
+	if err != nil {
+		http.Error(w, `{"error": "invalid webhook"}`, http.StatusBadRequest)
+		return
+	}
+
+	if event.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	_, err = cfg.db.UpgradeUserToChirpyRed(r.Context(), event.Data.UserID)
+	if err != nil {
+		http.Error(w, `{"error": "user not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -526,6 +561,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", customHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.polkaWebhookHandler)
 
 	//mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
